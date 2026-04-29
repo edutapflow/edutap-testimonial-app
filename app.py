@@ -626,7 +626,7 @@ def upload_template_ui() -> None:
     with st.form("upload_person_template_form", clear_on_submit=False):
         person_name = st.text_input(name_label, placeholder=name_placeholder)
         st.caption("The dropdown name will be created from this person name. The uploaded image must be exactly 1080 x 1080 px and .jpg.")
-        upload = st.file_uploader("Template Image (.jpg only, 1080 x 1080 px)", type=["jpg", "jpeg", "png", "webp"])
+        upload = st.file_uploader("Template Image (.jpg only, 1080 x 1080 px)", type=["jpg"])
         submitted = st.form_submit_button("Upload Template", type="primary")
 
     if submitted:
