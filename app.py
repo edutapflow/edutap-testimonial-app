@@ -90,7 +90,19 @@ def inject_css() -> None:
         h1, h2, h3, h4, h5, h6, p, label, span, div { color: #e5e7eb; }
         [data-testid="stCaptionContainer"], .stCaption, small { color: #94a3b8 !important; }
         hr { border-color: #334155 !important; }
-        div[data-baseweb="input"] > div, div[data-baseweb="select"] > div, textarea { background: #111827 !important; border-color: #334155 !important; color: #e5e7eb !important; }
+        div[data-baseweb="input"] > div, textarea { background: #111827 !important; border-color: #334155 !important; color: #e5e7eb !important; }
+        /* Make dropdowns visually different from text input boxes */
+        div[data-baseweb="select"] > div {
+            background: linear-gradient(135deg, #172554 0%, #0f766e 100%) !important;
+            border: 1px solid #22d3ee !important;
+            color: #ffffff !important;
+            box-shadow: 0 0 0 1px rgba(34,211,238,0.14), 0 10px 22px rgba(8,145,178,0.16) !important;
+            border-radius: 12px !important;
+        }
+        div[data-baseweb="select"] span, div[data-baseweb="select"] svg { color: #ffffff !important; fill: #ffffff !important; }
+        div[data-baseweb="popover"], ul[role="listbox"] { background: #0f172a !important; border: 1px solid #22d3ee !important; }
+        ul[role="listbox"] li, div[role="option"] { background: #0f172a !important; color: #e5e7eb !important; }
+        ul[role="listbox"] li:hover, div[role="option"]:hover { background: #164e63 !important; color: #ffffff !important; }
         input, textarea { color: #e5e7eb !important; }
         button, .stButton > button, .stDownloadButton > button { background: #0f172a !important; color: #e5e7eb !important; border: 1px solid #334155 !important; border-radius: 10px !important; }
         .stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"] { background: #0891b2 !important; border-color: #06b6d4 !important; color: white !important; }
@@ -182,22 +194,69 @@ def safe_template_name(name: str) -> str:
     return name
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+def _template_image_stems_from_local(folder: str) -> List[str]:
+    """Read template image names from the deployed GitHub assets folder."""
+    folder_path = Path(TEMPLATES_ROOT) / folder
+    if not folder_path.exists():
+        return []
+
+    blocked = {
+        "edutap feedback",
+        "course feedback",
+        "event feedback",
+        "mentor feedback",
+        "support feedback",
+        ".gitkeep",
+    }
+    names: List[str] = []
+    for file in folder_path.iterdir():
+        if not file.is_file():
+            continue
+        if file.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+            continue
+        stem = file.stem.strip()
+        if not stem or stem.lower() in blocked:
+            continue
+        names.append(stem)
+    return sorted(set(names), key=lambda x: x.lower())
+
+
 def get_people_lists_cached() -> Dict[str, List[str]]:
+    """
+    Build dropdown values live from template image filenames.
+
+    Priority:
+    1. local GitHub assets folder after deployment,
+    2. Supabase templates bucket, if used from Upload Template tab,
+    3. people_lists.json fallback.
+
+    This is intentionally not cached, so new template names appear after a
+    Streamlit rerun/redeploy without waiting for cache expiry.
+    """
     lists = load_people_lists()
     faculty = set(lists.get("faculty") or [])
     support = set(lists.get("support") or [])
 
+    # Local repo templates uploaded through GitHub website.
+    for folder in ["Mentor feedback", "Event Feedback"]:
+        faculty.update(_template_image_stems_from_local(folder))
+
+    support.update(_template_image_stems_from_local("Support Feedback"))
+
+    # Supabase templates uploaded through the app.
     for folder in ["Mentor feedback", "Event Feedback"]:
         for name in store.list_template_names(folder):
-            if name not in {"Event Feedback", "Mentor Feedback"}:
+            if name.lower() not in {"event feedback", "mentor feedback"}:
                 faculty.add(name)
 
     for name in store.list_template_names("Support Feedback"):
-        if name != "Support Feedback":
+        if name.lower() != "support feedback":
             support.add(name)
 
-    return {"faculty": sorted(faculty), "support": sorted(support)}
+    return {
+        "faculty": sorted(faculty, key=lambda x: x.lower()),
+        "support": sorted(support, key=lambda x: x.lower()),
+    }
 
 
 def show_processing_overlay(done: int, total: int) -> None:
