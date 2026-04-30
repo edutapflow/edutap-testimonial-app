@@ -1039,6 +1039,26 @@ def _measure(draw: ImageDraw.ImageDraw, font: ImageFont.FreeTypeFont, text: str)
 # ---------- Emoji-aware text helpers ----------
 _EMOJI_RX = re.compile(r"[\U0001F300-\U0001FAFF\u2600-\u27BF\u2764\uFE0F]", flags=re.UNICODE)
 
+def strip_emojis_for_graphic_text(value: str) -> str:
+    """Remove emojis / unsupported symbols from testimonial text before final graphic render."""
+    if not isinstance(value, str):
+        return ""
+
+    # Remove emoji characters covered by the existing emoji regex.
+    value = _EMOJI_RX.sub("", value)
+
+    # Remove common invisible emoji variation/joiner chars.
+    value = value.replace("\uFE0F", "").replace("\u200D", "")
+
+    # Remove object replacement / missing-glyph style remnants if present.
+    value = value.replace("□", "")
+
+    # Clean extra spacing before punctuation.
+    value = re.sub(r"\s+([,.!?;:])", r"\1", value)
+    value = re.sub(r"\s+", " ", value).strip()
+
+    return value
+
 def _split_by_emoji(s: str):
     out = []
     i = 0
@@ -1464,7 +1484,7 @@ async def _render_quote_html_png(
 async def compose_testimonial_graphic(
     raw_template_path: str,
     footer_path: str,
-    email_screenshot_image,   # bytes / bytearray / PIL.Image.Image / path
+    email_screenshot_image,
     out_path: str,
     testimonial_text: str,
     highlight_items: List[Dict[str, str]],
@@ -1472,6 +1492,16 @@ async def compose_testimonial_graphic(
 ) -> str:
     if not os.path.exists(raw_template_path):
         raise FileNotFoundError(raw_template_path)
+
+    testimonial_text = strip_emojis_for_graphic_text(testimonial_text)
+
+    cleaned_highlights = []
+    for h in highlight_items or []:
+        if isinstance(h, dict):
+            cleaned = strip_emojis_for_graphic_text(h.get("text", ""))
+            if cleaned and cleaned in testimonial_text:
+                cleaned_highlights.append({"text": cleaned})
+    highlight_items = cleaned_highlights
 
     # --- Load canvas ---
     base = Image.open(raw_template_path).convert("RGBA")
