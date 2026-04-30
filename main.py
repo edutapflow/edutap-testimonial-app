@@ -2311,6 +2311,23 @@ async def run_pipeline(url: str, raw_template_path: str, filename_suffix: str = 
             print(f"Navigating to URL: {url}")
             await page.goto(url, wait_until="networkidle", timeout=45_000)
 
+            # Make headless Chromium render emojis correctly in the email proof screenshot.
+            # Without a color emoji font on Linux/Streamlit Cloud, emojis may appear as square boxes.
+            try:
+                await page.add_style_tag(content="""
+                    * {
+                        font-family:
+                            Arial,
+                            "Segoe UI Emoji",
+                            "Noto Color Emoji",
+                            "Apple Color Emoji",
+                            "Twemoji Mozilla",
+                            sans-serif !important;
+                    }
+                """)
+            except Exception as e:
+                print(f"WARNING: could not inject emoji font fallback CSS: {e}")
+
             elem = await find_email_element(page)
             div_text = await elem.inner_text(timeout=5000)
 
