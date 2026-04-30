@@ -535,6 +535,9 @@ How to give all things:
 2. testimonial text will be give that is left from testimonial text only , means that we can write in graphics, do no include any html tag or any other text from your input that is not a part of testimonial text , means do not write other email things in it like ZM\nHimanshu Arora\nSun, 31 Aug 2025 2:18:27 PM -0700\nfeedback\n\n\n because this is real visual text that has to be written on visual graphic.
 3. Highlighted text: Same logic applies to this as well as of testimonial text , but this text must from testimonial text only.
 
+Grammar correction:
+if original email text is grammartically wrong you must correct it.
+
 🧩 OUTPUT FORMAT
 
 Return only a single JSON object (no prose, no Markdown, no code fences).
