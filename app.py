@@ -90,6 +90,7 @@ def init_state() -> None:
     st.session_state.setdefault("mentor_select_input", [])
     st.session_state.setdefault("support_mode_input", "1 Member")
     st.session_state.setdefault("support_member_input", "")
+    st.session_state.setdefault("pending_edit_job", None)
 
 
 def inject_css() -> None:
@@ -430,6 +431,22 @@ def load_job_into_form(job: Dict[str, Any]) -> None:
         st.session_state.support_mode_input = "1 Member" if data.get("mode") == "one" else "Team"
         st.session_state.support_member_input = data.get("member") or ""
 
+
+def apply_pending_edit_job() -> None:
+    """Apply queued Edit data before Streamlit widgets are created.
+
+    Streamlit does not allow changing widget-backed session_state keys
+    after those widgets have already been rendered in the same run.
+    So the Edit button stores the job in pending_edit_job, reruns, and
+    this function loads it into the form at the start of generate_ui().
+    """
+    job = st.session_state.get("pending_edit_job")
+    if not job:
+        return
+
+    load_job_into_form(job)
+    st.session_state.pending_edit_job = None
+
 def render_queue_grid() -> None:
     queue = st.session_state.job_queue
     st.markdown(f"### Queued Entries ({len(queue)})")
@@ -455,7 +472,7 @@ def render_queue_grid() -> None:
                     edit_col, remove_col = st.columns(2)
                     with edit_col:
                         if st.button("Edit", key=f"edit_queue_{idx}_{job.get('link','')}"):
-                            load_job_into_form(job)
+                            st.session_state.pending_edit_job = dict(job)
                             del st.session_state.job_queue[idx - 1]
                             st.rerun()
                     with remove_col:
@@ -786,6 +803,8 @@ def process_jobs(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def generate_ui() -> None:
+    apply_pending_edit_job()
+
     st.subheader("Create Testimonial Graphic")
     people = get_people_lists_cached()
 
