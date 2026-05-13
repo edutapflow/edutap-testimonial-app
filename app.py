@@ -867,7 +867,7 @@ def generate_ui() -> None:
             else:
                 st.session_state.job_queue.append(job)
                 st.session_state.clear_form_next_run = True
-                st.session_state.batch_add_message = "Entry added to batch. Form cleared for the next entry."
+                st.session_state.batch_add_message = "Entry added to batch."
                 st.rerun()
         except Exception as exc:
             st.error(friendly_error_message(exc))
