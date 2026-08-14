@@ -1283,6 +1283,249 @@ JS_BLUR_HELPER = r"""
   const root = document.querySelector(selector);
   if (!root) return {summary:`No element found for ${selector}`,hits:[],mergedRanges:[],skipped:[]};
 
+  // ---------- 0) ZOHO DUPLICATE HEADER-TEXT FIX ----------
+  // Zoho sometimes renders the sender / subject ("To") row twice inside the
+  // email card header, e.g. "feedback feedback" or
+  // "manijindal15092004 manijindal15092004".
+  //
+  // We detect an EXACT word-for-word doubling and DELETE the second copy.
+  //
+  // SCOPE: this runs ONLY on the card HEADER area (avatar / sender / date /
+  // subject rows). It never touches the email BODY, because a real testimonial
+  // sentence may legitimately repeat words. The header area is identified by
+  // BOTH conditions below having to be true:
+  //   1. the text node is among the first DEDUPE_MAX_HEADER_NODES text nodes, AND
+  //   2. the text sits inside the top band of the card (see DEDUPE_HEADER_BAND_*).
+  //
+  // This runs BEFORE text-node collection below, so allText / cumLen are built
+  // from the already-cleaned DOM and no other logic is affected.
+  const DEDUPE_ENABLE             = true;   // set false to switch this fix off
+  const DEDUPE_MAX_TEXT_CHARS     = 120;    // header rows are short
+  const DEDUPE_MIN_HALF_CHARS     = 4;      // ignore tiny repeats like "ok ok"
+  const DEDUPE_MAX_HEADER_NODES   = 8;      // only the first N text nodes of the card
+  const DEDUPE_HEADER_BAND_MIN_PX = 140;    // header band is never smaller than this
+  const DEDUPE_HEADER_BAND_MAX_PX = 200;    // and never larger than this
+  const DEDUPE_HEADER_BAND_RATIO  = 0.45;   // target: this fraction of card height
+  // EXACT TARGETING of the Zoho shared-link "To:" row.
+  // These are tried IN ORDER; the first one that matches wins, and only that
+  // row is cleaned. None of them contain Zoho's changing code suffix
+  // (e.g. "__1478a0e" / "__rhuj3") -- we match the stable part only:
+  //   1. label="To:"        -> an HTML attribute, no class code at all
+  //   2. zmail-header-recipients -> stable prefix, changing tail ignored via *=
+  //   3. span.email-id      -> a class with no changing code
+  // If Zoho renames all three someday, the code falls back to the position
+  // based header detection further below, so the app keeps working.
+  const DEDUPE_SUBJECT_SELECTORS  = [
+    'div[label="To:"]',
+    '[label="To:"]',
+    '[class*="zmail-header-recipients"]',
+    '[class*="zmail-header-data"] span.email-id',
+    'span.email-id'
+  ];
+  let dedupeFixedCount = 0;
+  let dedupeScopeUsed = "none";
+  const dedupeDetails = [];
+
+  (function removeDuplicateHeaderText(){
+    if (!DEDUPE_ENABLE) return;
+
+    function normWS(s){
+      return String(s == null ? "" : s)
+        .replace(/[\u00A0\u202F\u2007]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    // Returns the RAW character index where the repeated second copy starts,
+    // or -1 when the text is not an exact word-for-word doubling.
+    function doubleSplitIndexRaw(rawText){
+      const toks = [];
+      const rx = /\S+/g;
+      let m;
+      while ((m = rx.exec(rawText)) !== null){
+        toks.push({ w: m[0], s: m.index, e: m.index + m[0].length });
+      }
+      const n = toks.length;
+      if (n < 2 || n % 2 !== 0) return -1;
+      const half = n / 2;
+      for (let i = 0; i < half; i++){
+        if (toks[i].w !== toks[i + half].w) return -1;
+      }
+      const firstHalfStr = toks.slice(0, half).map(t => t.w).join(" ");
+      if (firstHalfStr.length < DEDUPE_MIN_HALF_CHARS) return -1;
+      return toks[half].s;
+    }
+
+    // ----- work out the header band (top strip of the email card) -----
+    let rootTop = 0;
+    let bandBottom = Number.POSITIVE_INFINITY;
+    try {
+      const rr = root.getBoundingClientRect();
+      rootTop = rr.top;
+      const byRatio = rr.height * DEDUPE_HEADER_BAND_RATIO;
+      const clamped = Math.max(
+        DEDUPE_HEADER_BAND_MIN_PX,
+        Math.min(DEDUPE_HEADER_BAND_MAX_PX, byRatio > 0 ? byRatio : DEDUPE_HEADER_BAND_MAX_PX)
+      );
+      bandBottom = rootTop + clamped;
+    } catch (e) {
+      // If geometry is unavailable we fall back to the node-index limit only.
+      bandBottom = Number.POSITIVE_INFINITY;
+    }
+
+    // If exact selectors were supplied, build the allowed element set from them.
+    let exactScopeEls = null;
+    let exactScopeSelector = null;
+    if (DEDUPE_SUBJECT_SELECTORS && DEDUPE_SUBJECT_SELECTORS.length){
+      for (let si = 0; si < DEDUPE_SUBJECT_SELECTORS.length; si++){
+        const sel = DEDUPE_SUBJECT_SELECTORS[si];
+        const found = [];
+        try {
+          root.querySelectorAll(sel).forEach(el => found.push(el));
+          if (root.matches && root.matches(sel)) found.push(root);
+        } catch (e) { continue; }   // bad selector -> try the next one
+        if (found.length){
+          exactScopeEls = found;          // FIRST selector that matches wins
+          exactScopeSelector = sel;
+          dedupeScopeUsed = "exact: " + sel;
+          break;
+        }
+      }
+    }
+
+    function isInExactScope(el){
+      if (!exactScopeEls) return false;
+      for (let i = 0; i < exactScopeEls.length; i++){
+        const s = exactScopeEls[i];
+        if (s === el || s.contains(el)) return true;
+      }
+      return false;
+    }
+
+    if (!exactScopeEls) dedupeScopeUsed = "fallback: header position band";
+
+    function isInHeaderBand(node){
+      const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+      if (!el) return false;
+      // Exact selectors win outright when configured.
+      if (exactScopeEls) return isInExactScope(el);
+      if (bandBottom === Number.POSITIVE_INFINITY) return true;
+      try {
+        const r = el.getBoundingClientRect();
+        if (!r || (r.width === 0 && r.height === 0)) return false;
+        return r.top <= bandBottom;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // ----- collect ONLY header-area candidate text nodes -----
+    const dupWalker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
+    const candidates = [];
+    let seenTextNodes = 0;
+    while (dupWalker.nextNode()){
+      const tn = dupWalker.currentNode;
+      if (tn.nodeType !== Node.TEXT_NODE) continue;
+      const raw = tn.textContent || "";
+      if (!raw.trim()) continue;
+
+      seenTextNodes++;
+      // Node-index cap applies only to the automatic heuristic, not exact selectors.
+      if (!exactScopeEls && seenTextNodes > DEDUPE_MAX_HEADER_NODES) break;
+      if (normWS(raw).length > DEDUPE_MAX_TEXT_CHARS) continue;
+      if (!isInHeaderBand(tn)) continue;
+
+      candidates.push(tn);
+    }
+
+    // ----- CASE A: the whole doubling sits inside ONE text node -----
+    const handledParents = new Set();
+    candidates.forEach(tn => {
+      const raw = tn.textContent || "";
+      const splitAt = doubleSplitIndexRaw(raw);
+      if (splitAt < 0) return;
+
+      const removed = normWS(raw.slice(splitAt));
+      if (!removed) return;
+
+      // Keep the first copy, drop the duplicate AND the whitespace before it.
+      const kept = raw.slice(0, splitAt).replace(/\s+$/, "");
+      tn.textContent = kept;
+
+      const parent = tn.parentNode;
+      if (parent) handledParents.add(parent);
+      dedupeFixedCount++;
+      dedupeDetails.push({ scope: "text-node", removed: removed });
+    });
+
+    // ----- CASE B: doubling split across sibling elements in one header row -----
+    // e.g. <span>feedback</span><span>feedback</span>
+    const headerEls = [];
+    (function collectHeaderEls(){
+      const all = Array.prototype.slice.call(root.querySelectorAll("*"));
+      all.push(root);
+      all.forEach(el => {
+        const t = el.textContent || "";
+        if (!t.trim()) return;
+        if (normWS(t).length > DEDUPE_MAX_TEXT_CHARS) return;
+        if (!isInHeaderBand(el)) return;
+        headerEls.push(el);
+      });
+    })();
+
+    headerEls.forEach(el => {
+      if (handledParents.has(el)) return;
+
+      const raw = el.textContent || "";
+      const splitAt = doubleSplitIndexRaw(raw);
+      if (splitAt < 0) return;
+
+      // Only act on the DEEPEST element that shows the doubling, so we never
+      // edit a wrapper when a smaller child already covers the same text.
+      let childAlsoDoubled = false;
+      const childEls = el.querySelectorAll("*");
+      for (let i = 0; i < childEls.length; i++){
+        const ct = childEls[i].textContent || "";
+        if (ct.trim() && doubleSplitIndexRaw(ct) >= 0){ childAlsoDoubled = true; break; }
+      }
+      if (childAlsoDoubled) return;
+
+      const removed = normWS(raw.slice(splitAt));
+      if (!removed) return;
+
+      // Walk this element's text nodes and delete everything at/after splitAt.
+      const innerWalker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
+      const innerNodes = [];
+      while (innerWalker.nextNode()){
+        const n2 = innerWalker.currentNode;
+        if (n2.nodeType === Node.TEXT_NODE && n2.textContent) innerNodes.push(n2);
+      }
+
+      let consumed = 0;
+      let didFix = false;
+      innerNodes.forEach(n2 => {
+        const t2 = n2.textContent || "";
+        const nodeStart = consumed;
+        const nodeEnd = consumed + t2.length;
+        consumed = nodeEnd;
+
+        if (nodeEnd <= splitAt) return;                 // entirely in the first copy
+        const localStart = Math.max(0, splitAt - nodeStart);
+        const kept = t2.slice(0, localStart).replace(/\s+$/, "");
+        if (kept !== t2){
+          n2.textContent = kept;
+          didFix = true;
+        }
+      });
+
+      if (didFix){
+        dedupeFixedCount++;
+        dedupeDetails.push({ scope: "element", removed: removed });
+      }
+    });
+  })();
+  // ---------- END ZOHO DUPLICATE HEADER-TEXT FIX ----------
+
   // collect text nodes
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
   const nodes = [];
@@ -1522,11 +1765,13 @@ JS_BLUR_HELPER = r"""
   })();
 
   return {
-    summary: `Blurred ${finalMerged.length} merged range(s) (incl. auto phone/email), from ${allHits.length} raw hit(s).`,
+    summary: `Blurred ${finalMerged.length} merged range(s) (incl. auto phone/email), from ${allHits.length} raw hit(s). Duplicate header fixes: ${dedupeFixedCount} (scope -> ${dedupeScopeUsed}).`,
     mergedRanges: finalMerged.map(m => ({start:m.start, end:m.end, text: allText.slice(m.start,m.end)})),
     hits: allHits,
     skipped: allSkipped,
     phrasesUsed: phrases || [],
+    duplicateFixes: dedupeDetails,
+    duplicateScopeUsed: dedupeScopeUsed,
     blurPx
   };
 }
