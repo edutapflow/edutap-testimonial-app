@@ -607,10 +607,15 @@ def snap_to_dom_substring(dom_text: str, phrase: str, min_ratio: float = 0.92) -
     if len(norm_phrase) < 10: return None
 
     L=len(norm_phrase); best_ratio=0.0; best_start=-1; best_end=-1
+    matcher = SequenceMatcher(None, "", norm_phrase)
     for w in range(max(6,L-3), L+4):
         for start in range(0, max(0, len(norm_dom)-w+1)):
             window = norm_dom[start:start+w]
-            r = SequenceMatcher(None, window, norm_phrase).ratio()
+            matcher.set_seq1(window)
+            upper_bound = matcher.quick_ratio()
+            if upper_bound <= best_ratio or upper_bound < min_ratio:
+                continue
+            r = matcher.ratio()
             if r>best_ratio: best_ratio, best_start, best_end = r, start, start+w
     if best_ratio < min_ratio or best_start < 0: return None
     start_raw = dom_spans[best_start][0]; end_raw = dom_spans[best_end-1][1]
@@ -1869,6 +1874,8 @@ def call_gpt(div_text: str):
 
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
+    import time as _time
+    request_started = _time.perf_counter()
     try:
         resp = requests.post(
             OPENAI_CHAT_COMPLETIONS_URL,
@@ -1884,6 +1891,7 @@ def call_gpt(div_text: str):
 
     try:
         data = resp.json()
+        print(f"PERF: openai_seconds={_time.perf_counter() - request_started:.2f}; usage={data.get("usage", {})}")
         content = data["choices"][0]["message"]["content"]
         payload_obj = json.loads(content)
     except Exception as e:
@@ -2021,7 +2029,29 @@ def get_header_names_to_blur(div_text: str, student_name: str) -> List[str]:
     return out
 
 
-async def run_pipeline(url: str, raw_template_path: str, filename_suffix: str = "") -> dict:
+async def _compose_captured_proof(proof: dict, raw_template_path: str, filename_suffix: str) -> dict:
+    """Compose another variant without reopening Zoho or repeating blur work."""
+    import uuid
+    def slug(value):
+        return re.sub(r"[^A-Za-z0-9]+", "_", (value or "").strip()).strip("_") or "Student_Name"
+    name_part = slug(proof["student_name"])
+    if filename_suffix:
+        name_part += "_" + slug(filename_suffix)
+    # Multiple operators/repeated jobs must not overwrite one another's PNGs.
+    os.makedirs(LOCAL_OUTPUT_DIR, exist_ok=True)
+    out = os.path.join(LOCAL_OUTPUT_DIR, f"{name_part}_{uuid.uuid4().hex[:12]}.png")
+    testimonial = proof["testimonial"]
+    path = await compose_testimonial_graphic(
+        raw_template_path, FOOTER_IMAGE_PATH, proof["email_bytes"], out,
+        testimonial.get("text", ""), testimonial.get("highlights", []) or [],
+        proof["student_name"],
+    )
+    return {"image_path": path, "student_name": proof["student_name"],
+            "testimonial_text": testimonial.get("text", ""),
+            "highlights": testimonial.get("highlights", []) or []}
+
+
+async def run_pipeline(url: str, raw_template_path: str, filename_suffix: str = "", *, capture_cache: Optional[dict] = None) -> dict:
     """
     Core pipeline:
     - open the given URL
@@ -2030,6 +2060,10 @@ async def run_pipeline(url: str, raw_template_path: str, filename_suffix: str = 
     - compose final testimonial graphic
     - return paths + metadata as a dict (no prints for UI use)
     """
+    cache_key = url.strip()
+    if capture_cache is not None and cache_key in capture_cache:
+        print("PERF: reusing_submission_email_capture")
+        return await _compose_captured_proof(capture_cache[cache_key], raw_template_path, filename_suffix)
     print("Launching Chromium browser...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -2187,46 +2221,14 @@ async def run_pipeline(url: str, raw_template_path: str, filename_suffix: str = 
             raw_email_bytes = await elem.screenshot()  # returns bytes
             email_bytes = optimize_email_screenshot_bytes(raw_email_bytes)
 
-            # 6) Build final filename with student name + optional variant (mentor name, etc.)
-            def _slugify(n: str) -> str:
-                s = re.sub(r"[^A-Za-z0-9]+", "_", (n or "").strip())
-                s = s.strip("_")
-                return s or "Student_Name"
-
-            student_slug = _slugify(student_name)
-            suffix_slug = _slugify(filename_suffix) if filename_suffix else ""
-
-            if suffix_slug:
-                name_part = f"{student_slug}_{suffix_slug}"
-            else:
-                name_part = student_slug
-
-            # Use the same folder as google_clients.py
-            SAVE_DIR = LOCAL_OUTPUT_DIR
-            os.makedirs(SAVE_DIR, exist_ok=True)
-            final_filename = os.path.join(SAVE_DIR, f"{name_part}.png")
-
-            # 7) Compose final graphic using in-memory screenshot
-            print("Composing testimonial graphic...")
-            final_path = await compose_testimonial_graphic(
-                raw_template_path,
-                FOOTER_IMAGE_PATH,
-                email_bytes,
-                final_filename,
-                testimonial.get("text", ""),
-                testimonial.get("highlights", []) or [],
-                student_name,
-            )
-
-            print(f"Saved testimonial image: {final_path}")
-
-            # return everything needed by the UI
-            return {
-                "image_path": final_path,
-                "student_name": student_name,
-                "testimonial_text": testimonial.get("text", ""),
-                "highlights": testimonial.get("highlights", []),
-            }
+            proof = {"email_bytes": email_bytes, "student_name": student_name,
+                     "testimonial": testimonial}
+            result = await _compose_captured_proof(proof, raw_template_path, filename_suffix)
+            if capture_cache is not None and len(email_bytes) <= 4 * 1024 * 1024:
+                if len(capture_cache) >= 4:
+                    capture_cache.pop(next(iter(capture_cache)))
+                capture_cache[cache_key] = proof
+            return result
 
         except PlaywrightTimeoutError:
             msg = "Timed out while loading or locating the element."

@@ -41,7 +41,6 @@ for key in [
     "SUPABASE_URL",
     "SUPABASE_ANON_KEY",
     "SUPABASE_SERVICE_ROLE_KEY",
-    "APP_PASSWORD",
 ]:
     try:
         if key in st.secrets and not os.getenv(key):
@@ -179,24 +178,6 @@ def inject_css() -> None:
 
 
 # ------------------------- Helpers -------------------------
-
-@st.cache_resource(show_spinner=False)
-def ensure_playwright_browser() -> bool:
-    """Verify the browser installed during the Docker build; never download per job."""
-    async def probe():
-        from playwright.async_api import async_playwright
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=True)
-            await browser.close()
-    try:
-        run_async(probe())
-    except Exception as exc:
-        raise RuntimeError(
-            "Chromium could not start. Check Render logs and rebuild the Docker "
-            "image; the Dockerfile installs Chromium and its Linux dependencies."
-        ) from exc
-    return True
-
 
 def run_async(coro):
     """Run async Playwright work safely under Streamlit on Windows."""
@@ -505,8 +486,14 @@ def render_queue_grid() -> None:
 
 
 def _image_to_data_uri(path: Path) -> str:
-    b64 = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f"data:image/png;base64,{b64}"
+    # Browser preview is small; the download below remains the original PNG.
+    with Image.open(path) as image:
+        preview = image.convert("RGB")
+        preview.thumbnail((480, 480), Image.Resampling.LANCZOS)
+        buffer = BytesIO()
+        preview.save(buffer, format="JPEG", quality=85)
+    b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{b64}"
 
 
 def _download_data_uri(path: Path) -> str:
@@ -538,30 +525,6 @@ def normalize_aggrid_selected_rows(value: Any) -> List[Dict[str, Any]]:
         return list(value)
     except Exception:
         return []
-
-def password_gate() -> None:
-    """Simple password screen for public Streamlit deployment."""
-    expected_password = (os.getenv("APP_PASSWORD") or "test@123").strip() or "test@123"
-
-    if st.session_state.get("authenticated", False):
-        return
-
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1, 1.2, 1])
-    with c2:
-        st.title("EduTap Access")
-        st.caption("Enter password to open the testimonial app.")
-        with st.form("edutap_login_form", clear_on_submit=False):
-            password = st.text_input("Password", type="password", placeholder="Enter password")
-            submitted = st.form_submit_button("Open App", type="primary")
-            if submitted:
-                if password == expected_password:
-                    st.session_state["authenticated"] = True
-                    st.rerun()
-                else:
-                    st.error("Wrong password. Please try again.")
-    st.stop()
-
 
 # ------------------------- Template Upload Tab -------------------------
 
@@ -770,14 +733,9 @@ def process_jobs(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     overlay = st.empty()
     with overlay:
         show_processing_overlay(0, max(len(jobs), 1))
-    time.sleep(0.05)
-
-    try:
-        ensure_playwright_browser()
-    except Exception:
-        overlay.empty()
-        raise
     all_results: List[Dict[str, Any]] = []
+    # Local to this submission; never shared with another operator.
+    capture_cache: Dict[str, Any] = {}
     total_units = 0
 
     for job in jobs:
@@ -793,13 +751,19 @@ def process_jobs(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         for job in jobs:
             variants = get_template_variants(job["type"], job.get("data") or {})
             for template_path, label in variants:
-                result = run_async(run_pipeline(job["link"], template_path, filename_suffix=label))
+                started = time.perf_counter()
+                result = run_async(run_pipeline(
+                    job["link"], template_path, filename_suffix=label,
+                    capture_cache=capture_cache,
+                ))
+                print(f"PERF: generation_seconds={time.perf_counter() - started:.2f}")
 
                 per_data = dict(job.get("data") or {})
                 per_data["student_name"] = result.get("student_name") or ""
                 if job["type"] == "mentor" and label:
                     per_data["person"] = label
 
+                save_started = time.perf_counter()
                 record = store.save_generated_record(
                     feedback_type=job["type"],
                     entered_by=job["operator"],
@@ -808,6 +772,7 @@ def process_jobs(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     student_name=result.get("student_name") or "",
                     data=per_data,
                 )
+                print(f"PERF: supabase_save_seconds={time.perf_counter() - save_started:.2f}")
                 result["record"] = record
                 all_results.append(result)
 
@@ -933,8 +898,9 @@ def generate_ui() -> None:
 
 # ------------------------- Saved Records Tab -------------------------
 
+@st.cache_data(ttl=15, max_entries=32, show_spinner=False)
 def get_records_cached(type_filter: str, status_filter: str, search: str) -> List[Dict[str, Any]]:
-    # Do not cache records: operators expect newly generated graphics and scheduling changes to appear immediately.
+    # Writes and Refresh clear this cache; other operators see changes within 15 seconds.
     return store.list_records(type_filter, status_filter, search)
 
 
@@ -1077,6 +1043,7 @@ def records_ui() -> None:
                     if marker in st.session_state.status_update_seen:
                         continue
                     store.update_scheduling(rid, status)
+                    get_records_cached.clear()
                     st.session_state.status_update_seen.add(marker)
                     actually_updated.append(marker)
 
@@ -1160,6 +1127,7 @@ def records_ui() -> None:
             marker = (rid, status)
             if marker not in st.session_state.status_update_seen:
                 store.update_scheduling(rid, status)
+                get_records_cached.clear()
                 st.session_state.status_update_seen.add(marker)
         st.toast("Scheduling updated.", icon="✅")
     selected_rows = [r for r in rows if int(r.get("id") or 0) in selected_ids]
@@ -1197,9 +1165,17 @@ def records_ui() -> None:
 # ------------------------- Main -------------------------
 
 def main() -> None:
+    # This header is supplied only after server-side cookie authentication.
+    # Requests cannot bypass the gate by supplying their own header.
+    try:
+        import uuid
+        uuid.UUID(st.context.headers.get("x-edutap-session", ""))
+    except (ValueError, TypeError, AttributeError):
+        st.error("Open the app using its Render URL to sign in.")
+        st.stop()
     init_state()
     inject_css()
-    password_gate()
+    st.markdown('<a href="/auth/logout" target="_self">Log out</a>', unsafe_allow_html=True)
 
     st.title("Testimonial Graphic Maker")
     st.caption("EduTap online version: Streamlit + Supabase")

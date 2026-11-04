@@ -23,3 +23,7 @@ supafunc==0.5.1
 
 # The supplied Cloud logs identify PyArrow 26.0.1 as a known segfault release.
 pyarrow==24.0.0
+
+# Password-cookie signing and the ASGI authentication layer.
+itsdangerous==2.2.0
+starlette==1.10.0
