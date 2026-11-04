@@ -1,0 +1,128 @@
+RENDER SETUP — EDUTAP TESTIMONIAL APP
+
+1) PUT THE FILES IN GITHUB
+Open edutapflow/edutap-testimonial-app, branch main.
+Extract this package. Copy its contents DIRECTLY into the repository root:
+the same folder that already contains app.py and main.py.
+Do not upload this ZIP itself or create an extra render_package subfolder.
+
+ADD:      Dockerfile, .dockerignore, start_render.py, RENDER_SETUP.txt
+REPLACE:  app.py, google_clients.py, requirements.txt
+KEEP:     main.py, supabase_store.py, names_config.json, assets/,
+          .streamlit/config.toml and the remaining original application files.
+
+Dockerfile has NO extension. .dockerignore begins with a dot.
+The guide is included for reference; it does not run.
+Commit these files together. These replacement Python files are based on your
+latest edutap-testimonial-app-main(1).zip, preserving its current interface.
+Do not substitute the earlier local Downloads-folder files for these files.
+
+2) CREATE THE RENDER SERVICE
+Open https://dashboard.render.com/
+Click New > Web Service > Git Provider.
+Connect GitHub and select edutapflow/edutap-testimonial-app.
+
+Use these settings:
+Name:                  edutap-testimonial-app (or another available name)
+Branch:                main
+Root Directory:        leave blank (repository root)
+Language / Runtime:    Docker
+Dockerfile Path:       ./Dockerfile
+Docker Build Context:  . (leave the default repository-root context)
+Docker Command:        leave blank; Dockerfile starts the app automatically
+Health Check Path:     /_stcore/health
+Region:                choose an available region close to your team/Supabase
+Instances:             1
+
+Docker handles Python, package installation, Linux browser dependencies and
+Chromium. Do not set a separate pip Build Command or a uvicorn Start Command.
+No local Docker/Python installation is needed to deploy through Render.
+You do not need run_local.py on Render. The Docker image uses Python 3.12.
+
+Free can be used for a trial, but it can sleep after inactivity and has limited
+resources. For regular team use choose a paid instance; around 2 GB RAM or more
+is a practical starting recommendation for Chromium, not a measured requirement
+for your workload. Generate one job first and watch memory before batch use.
+Do not enable multiple replicas for the initial test.
+
+3) ADD YOUR PRIVATE SETTINGS IN RENDER
+Before clicking Deploy/Create Web Service, open Environment Variables.
+Add each key below as a SEPARATE name/value pair:
+
+OPENAI_API_KEY                 your existing OpenAI API key
+OPENAI_MODEL                   your existing working model, e.g. gpt-5
+SUPABASE_URL                   your existing Supabase project URL
+SUPABASE_SERVICE_ROLE_KEY      your existing Supabase service role key
+APP_PASSWORD                  the password you want your team to use
+
+Paste only the value into Render's Value box, without TOML quotes or KEY=.
+Do not paste the whole Streamlit secrets block into one variable.
+Retrieve the existing values privately from your own Streamlit app settings.
+They were not read or included in this package. Do not commit private values,
+.env, credentials or secrets.toml to GitHub.
+The same Supabase URL/key keeps using your existing online records and buckets;
+you do not need a new database or data migration.
+Render supplies PORT automatically; do not create a PORT variable manually.
+
+4) DEPLOY
+Click Deploy Web Service / Create Web Service.
+Watch the build logs. The first build downloads Chromium and can take several
+minutes. Wait until the service status is Live and Render shows its public URL.
+Open that https://...onrender.com URL, enter APP_PASSWORD, and test one email.
+Check: login > Create Graphic > preview > Saved Records > image download.
+The real test makes the usual OpenAI call and saves the result in Supabase.
+If you edit environment variables later, use Render's save/redeploy option.
+For future code updates, commit to main and use the service's auto-deploy or
+Manual Deploy > Deploy latest commit.
+
+5) WHERE IMAGES AND TEMPLATES GO
+Generated server files go under /app/output inside the container. Supabase
+remains the persistent storage for generated images and saved records.
+Render's local filesystem is temporary; local previews/files can disappear on
+restart or redeploy. Retrieve persistent images using Saved Records.
+Use the app's Download button to save to your own computer. A remote server
+cannot automatically write into each team member's Downloads folder.
+
+Preserve assets/Templates/NewDesign and names_config.json in GitHub.
+Your latest ZIP lacks NewDesign/Event.png. Event generation requires restoring
+that file from your original assets OR keeping NewDesign/Event.png in your
+existing Supabase templates bucket so the app can download it. The other four
+fixed templates are present. This is separate from the login/loading issue.
+Template/name edits that only exist inside a container can disappear; keep
+intended changes in GitHub or Supabase as appropriate.
+
+6) IF IT FAILS
+Build fails: open Render Logs and read the first actual error, not only the
+last 'build failed' line. Send those error lines with any keys removed.
+Out of memory/killed/exit 137: increase instance memory or reduce batch size.
+Login works but generation fails: check Chromium/build logs, real Zoho share
+link access, OpenAI credit and Supabase settings/buckets.
+Do not set Docker Command to python main.py or uvicorn main:app.
+The supplied start_render.py runs Streamlit app.py on 0.0.0.0 and Render's port.
+
+7) WHAT WAS CHANGED / WHAT WAS TESTED
+Dockerfile: installs pinned packages and Chromium/Linux dependencies at build
+ time; runs as a non-root user; keeps secrets out of build configuration.
+.dockerignore: excludes virtual environments, private settings and generated
+ files from the Docker build context.
+start_render.py: detects PORT, validates it and starts Streamlit from the app
+ folder. No API keys are baked into it.
+app.py: checks the preinstalled browser instead of downloading it during a job;
+ clears the processing overlay if that check fails. Remaining features retained.
+google_clients.py: fixes the old parent-folder assumption so generated images
+ use writable /app/output alongside the rest of the flat repository.
+requirements.txt: pins the tested package baseline, including Streamlit 1.57.0
+ and PyArrow 24.0.0.
+
+Validation: Python syntax, startup argument handling, app login/page rendering,
+output-path alignment, local health/HTML/TextInput JavaScript responses and
+package consistency were checked outside Docker on Python 3.12. Docker is not
+available in this review environment, so the image build, Chromium launch in
+the image and actual Render deployment have NOT been executed. Your first
+Render build and real image job are the remaining verification steps.
+
+Official references:
+https://render.com/docs/docker
+https://render.com/docs/web-services
+https://render.com/docs/free
+https://playwright.dev/python/docs/docker

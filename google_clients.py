@@ -10,17 +10,17 @@ from googleapiclient.http import MediaFileUpload
 
 # ===================== CONFIG =====================
 
-# backend/ folder (where google_clients.py is)
+# Application folder (all Python modules live together in this repository).
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# project root = one level above backend/  (EduTap-Testimonial-App folder)
-PROJECT_ROOT = os.path.dirname(BASE_DIR)
+# Keep generated files in the writable application folder inside the container.
+PROJECT_ROOT = BASE_DIR
 
-# credentials folder at: EduTap-Testimonial-App/credentials
+# Optional legacy Google credentials folder beside the application modules.
 CREDENTIALS_DIR = os.path.join(PROJECT_ROOT, "credentials")
 
 # Where your local PNGs are written by run_pipeline
-# (EduTap-Testimonial-App/output)
+# (project/output)
 LOCAL_OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output")
 
 # --- Service account for SHEETS ---

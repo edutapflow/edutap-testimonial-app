@@ -182,19 +182,20 @@ def inject_css() -> None:
 
 @st.cache_resource(show_spinner=False)
 def ensure_playwright_browser() -> bool:
+    """Verify the browser installed during the Docker build; never download per job."""
+    async def probe():
+        from playwright.async_api import async_playwright
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True)
+            await browser.close()
     try:
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True,
-            timeout=300,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        return True
+        run_async(probe())
     except Exception as exc:
-        print(f"WARNING: Playwright install step failed or was skipped: {exc}")
-        return False
+        raise RuntimeError(
+            "Chromium could not start. Check Render logs and rebuild the Docker "
+            "image; the Dockerfile installs Chromium and its Linux dependencies."
+        ) from exc
+    return True
 
 
 def run_async(coro):
@@ -771,7 +772,11 @@ def process_jobs(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         show_processing_overlay(0, max(len(jobs), 1))
     time.sleep(0.05)
 
-    ensure_playwright_browser()
+    try:
+        ensure_playwright_browser()
+    except Exception:
+        overlay.empty()
+        raise
     all_results: List[Dict[str, Any]] = []
     total_units = 0
 

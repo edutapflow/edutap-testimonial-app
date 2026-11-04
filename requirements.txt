@@ -1,4 +1,4 @@
-# Pinned baseline for the supplied Streamlit Community Cloud app.
+# Pinned runtime for the supplied app on Render Docker.
 # Tested with Python 3.12; no changes to app code or private settings.
 streamlit==1.57.0
 pillow==12.2.0
