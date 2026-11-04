@@ -1,13 +1,25 @@
-streamlit>=1.35
-pillow>=10.0
-requests>=2.31
-playwright>=1.45
+# Pinned baseline for the supplied Streamlit Community Cloud app.
+# Tested with Python 3.12; no changes to app code or private settings.
+streamlit==1.57.0
+pillow==12.2.0
+requests==2.33.1
+playwright==1.59.0
 supabase==2.6.0
-fastapi>=0.111
-uvicorn>=0.30
-pydantic>=2.7
-google-api-python-client>=2.130
-google-auth>=2.29
-google-auth-oauthlib>=1.2
-python-multipart>=0.0.9
-streamlit-aggrid>=1.0.5
+fastapi==0.136.1
+uvicorn==0.46.0
+pydantic==2.13.4
+google-api-python-client==2.196.0
+google-auth==2.52.0
+google-auth-oauthlib==1.4.0
+python-multipart==0.0.27
+streamlit-aggrid==1.2.1.post2
+pandas==3.0.2
+httpx==0.27.2
+gotrue==2.12.4
+postgrest==0.16.11
+realtime==1.0.6
+storage3==0.7.7
+supafunc==0.5.1
+
+# The supplied Cloud logs identify PyArrow 26.0.1 as a known segfault release.
+pyarrow==24.0.0
