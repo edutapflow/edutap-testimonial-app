@@ -1804,6 +1804,9 @@ def friendly_error_message(err: Exception | str) -> str:
     if "template not found" in low or "no such file" in low and "templates" in low:
         return "The required template is missing. Please upload the correct template first."
 
+    if "zoho navigation failed" in low:
+        return "Zoho rejected the hosting server request. Check Render logs for the HTTP status and try a fresh share link."
+
     if "could not find the email body" in low or "timed out" in low or "timeout" in low or "net::" in low or "navigation" in low:
         return "The Zoho email page could not be opened or detected. Please check the link and try again."
 
@@ -1914,98 +1917,51 @@ def call_gpt(div_text: str):
 # ===================== MAIN =====================
 
 async def find_email_element(page):
+    """Wait for Zoho's actual email card, not for network silence.
+
+    Prefix selectors tolerate Zoho's generated CSS suffix. Deliberately avoid
+    a generic largest-div fallback, which could capture an error/login page.
     """
-    Finds the Zoho email body without depending on the changing class suffix.
-
-    Priority:
-    1. Stable Zoho shared mail containers.
-    2. Classes starting with zmails__.
-    3. Largest visible div containing actual email text.
-    """
-
-    async def is_good_locator(locator):
+    try:
+        handle = await page.wait_for_function(
+            """(selectors) => {
+                for (const selector of selectors) {
+                    const nodes = document.querySelectorAll(selector);
+                    for (let index = 0; index < Math.min(nodes.length, 10); index++) {
+                        const element = nodes[index];
+                        const rect = element.getBoundingClientRect();
+                        const style = getComputedStyle(element);
+                        const text = (element.innerText || '').trim();
+                        if (style.visibility !== 'hidden' && style.display !== 'none'
+                            && rect.width >= 250 && rect.height >= 40
+                            && text.length >= 20) {
+                            return {selector, index};
+                        }
+                    }
+                }
+                return false;
+            }""",
+            arg=ELEMENT_SELECTOR_CANDIDATES,
+            timeout=60_000,
+            polling=250,
+        )
         try:
-            await locator.wait_for(state="visible", timeout=3000)
-            box = await locator.bounding_box()
-            text = await locator.inner_text(timeout=3000)
-
-            if not box or not text:
-                return False
-
-            text_clean = " ".join(text.split())
-
-            if box["width"] < 300:
-                return False
-
-            if box["height"] < 100:
-                return False
-
-            if len(text_clean) < 40:
-                return False
-
-            return True
-        except Exception:
-            return False
-
-    # 1. Try known stable/prefix selectors
-    for selector in ELEMENT_SELECTOR_CANDIDATES:
-        try:
-            locators = page.locator(selector)
-            count = await locators.count()
-
-            for i in range(min(count, 10)):
-                loc = locators.nth(i)
-                if await is_good_locator(loc):
-                    return loc
-        except Exception:
-            continue
-
-    # 2. Fallback: choose largest meaningful div
-    best = None
-    best_score = 0
-
-    divs = page.locator("div")
-    count = await divs.count()
-
-    for i in range(min(count, 500)):
-        try:
-            loc = divs.nth(i)
-            box = await loc.bounding_box()
-            text = await loc.inner_text(timeout=1000)
-
-            if not box or not text:
-                continue
-
-            text_clean = " ".join(text.split())
-
-            if box["width"] < 300 or box["height"] < 100:
-                continue
-
-            if len(text_clean) < 40:
-                continue
-
-            score = len(text_clean) + int(box["height"])
-
-            # Prefer actual mail body text
-            if "feedback" in text_clean.lower():
-                score += 500
-
-            if "wrote:" in text_clean.lower():
-                score += 200
-
-            if score > best_score:
-                best = loc
-                best_score = score
-
-        except Exception:
-            continue
-
-    if best:
-        return best
-
-    raise RuntimeError(
-        "Could not find the email body on this Zoho page. Please check whether the link is accessible."
-    )
+            selected = await handle.json_value()
+        finally:
+            await handle.dispose()
+        locator = page.locator(selected["selector"]).nth(selected["index"])
+        await locator.wait_for(state="visible", timeout=5000)
+        print("ZOHO_STAGE: email_card_ready")
+        return locator
+    except PlaywrightTimeoutError as exc:
+        from urllib.parse import urlsplit
+        host = urlsplit(page.url).hostname or "unknown"
+        print(f"ZOHO_STAGE: email_card_timeout; host={host}")
+        raise RuntimeError(
+            "Could not find the email body on this Zoho page after 60 seconds. "
+            "The share page may be slow, blocked from the hosting server, "
+            "expired, or displaying a different layout."
+        ) from exc
 
 
 def _norm_person_for_compare(value: str) -> str:
@@ -2089,8 +2045,22 @@ async def run_pipeline(url: str, raw_template_path: str, filename_suffix: str = 
         page = await context.new_page()
 
         try:
-            print(f"Navigating to URL: {url}")
-            await page.goto(url, wait_until="networkidle", timeout=45_000)
+            print("ZOHO_STAGE: navigation_started")
+            from urllib.parse import urlsplit
+            try:
+                response = await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                status = response.status if response is not None else "unknown"
+                host = urlsplit(page.url).hostname or "unknown"
+                print(f"ZOHO_STAGE: dom_ready; http_status={status}; host={host}")
+                if response is not None and response.status >= 400:
+                    raise RuntimeError(
+                        f"Zoho navigation failed with HTTP {response.status}. "
+                        "The hosting server could not access the share page."
+                    )
+            except PlaywrightTimeoutError:
+                # A slow resource must not discard an already rendered email.
+                # The email-card wait below decides whether the page is usable.
+                print("ZOHO_STAGE: navigation_timeout; checking_for_email_card")
 
             # Make headless Chromium render emojis correctly in the email proof screenshot.
             # Without a color emoji font on Linux/Streamlit Cloud, emojis may appear as square boxes.
